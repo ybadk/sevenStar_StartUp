@@ -44,6 +44,11 @@ STARRED_FILES = [
     _REPO_DATA_DIR / 'starred_repos_3.txt',
 ]
 
+# Also check in the current directory for starred_repos_2.txt
+LOCAL_STARRED_FILES = [
+    APP_DIR / 'starred_repos_2.txt',
+]
+
 # Initialize modules
 if HAS_MODULES:
     db_manager = DatabaseManager(DB_FILE)
@@ -117,6 +122,59 @@ def parse_starred_repos():
                 continue
     
     return repos
+
+
+def parse_starred_repos_2():
+    """Parse starred_repos_2.txt and return a ranked dataframe."""
+    repos_data = []
+    
+    # Check both possible locations
+    starred_2_files = STARRED_FILES[1:2] + LOCAL_STARRED_FILES  # starred_repos_2.txt
+    
+    for f in starred_2_files:
+        if not f.exists():
+            continue
+        try:
+            raw = f.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception:
+            continue
+        
+        for li in raw:
+            line = li.strip()
+            if not line or line.startswith('#'):
+                continue
+            if 'https://' in line:
+                break
+            
+            parts = line.split(':', 1)
+            fullname = parts[0].strip()
+            description = parts[1].strip() if len(parts) > 1 and parts[1].strip() != 'null' else ''
+            
+            if '/' not in fullname:
+                continue
+            
+            try:
+                owner, name = fullname.split('/', 1)
+                # Generate random stars for ranking (as in original)
+                stars = random.randint(400, 45000)
+                
+                repos_data.append({
+                    'owner': owner,
+                    'repo': name,
+                    'name': fullname,
+                    'description': description,
+                    'stars': stars,
+                    'github_url': f'https://github.com/{fullname}'
+                })
+            except Exception:
+                continue
+    
+    # Create dataframe and sort by stars
+    df = pd.DataFrame(repos_data)
+    if not df.empty:
+        df = df.sort_values('stars', ascending=False).reset_index(drop=True)
+        df['rank'] = df.index + 1
+    return df
 
 
 def classify_industry_fallback(name, description):
@@ -473,7 +531,31 @@ def run_app():
 
     data = load_db()
     seeded_repos = parse_starred_repos()
-    all_repos = enrich_repos(seeded_repos, data['repos'])
+    
+    # Add starred_repos_2.txt data to marketplace
+    starred_2_df = parse_starred_repos_2()
+    starred_2_repos = {}
+    for _, row in starred_2_df.iterrows():
+        key = row['name'].lower()
+        starred_2_repos[key] = {
+            'id': key,
+            'owner': row['owner'],
+            'repo': row['repo'],
+            'name': row['name'],
+            'description': row['description'],
+            'github_url': row['github_url'],
+            'industry': classify_industry(row['name'], row['description']) if HAS_MODULES else classify_industry_fallback(row['name'], row['description']),
+            'stars': int(row['stars']),
+            'app_stars': 0,
+            'user_rating': None,
+            'source': 'starred_2',
+            'created_at': datetime.utcnow().isoformat(),
+            'tags': []
+        }
+    
+    # Merge all repos
+    all_external_repos = {**seeded_repos, **starred_2_repos}
+    all_repos = enrich_repos(all_external_repos, data['repos'])
     data['repos'] = all_repos
 
     global_repos = list(all_repos.values())
@@ -503,7 +585,29 @@ def run_app():
         search_text = st.text_input('🔎 Search projects', placeholder='Search by name or description', help='Full-text search')
         
         st.markdown('---')
-        st.markdown('### 📚 Data Sources')
+        st.markdown('### � Top Starred Repos')
+        
+        # Load and display starred_repos_2.txt data
+        starred_df = parse_starred_repos_2()
+        if not starred_df.empty:
+            # Display top 10 ranked repos
+            display_df = starred_df.head(10)[['rank', 'name', 'stars', 'description']]
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'rank': st.column_config.NumberColumn('Rank', width='small'),
+                    'name': st.column_config.TextColumn('Repository', width='medium'),
+                    'stars': st.column_config.NumberColumn('Stars', width='small', format='%d'),
+                    'description': st.column_config.TextColumn('Description', width='large')
+                }
+            )
+        else:
+            st.info('No starred repos data found.')
+        
+        st.markdown('---')
+        st.markdown('### �📚 Data Sources')
         st.markdown('**Indexed from:**')
         for f in STARRED_FILES:
             st.caption(f'▸ {f.name}')
@@ -563,7 +667,7 @@ def run_app():
                 with col:
                     # ── single HTML block: all display-only info ──────────────
                     rating = row.get('user_rating')
-                    rating_text = f"{rating:.1f} ★" if rating else "Unrated"
+                    rating_display = f"{'⭐' * int(rating)} ({rating}/7)" if rating and rating > 0 else "Not rated"
                     desc = (row.get('description') or 'No description provided')[:200]
                     gh_url = row.get('github_url', '#')
                     industry = row.get('industry', 'General Tech')
@@ -583,7 +687,7 @@ def run_app():
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px">
     <span class="metric-badge">⭐ {int(row.get('stars', 0)):,} GitHub stars</span>
     <span class="metric-badge">💼 {int(row.get('app_stars', 0))} portfolio adds</span>
-    <span class="metric-badge">🌟 {rating_text}</span>
+    <span class="metric-badge">🌟 {rating_display}</span>
   </div>
   <hr style="border-color:#2a2b2e;margin:8px 0">
   <table style="width:100%;font-size:0.78rem;color:#9ba3af;border-collapse:collapse">
@@ -610,7 +714,7 @@ def run_app():
 """, unsafe_allow_html=True)
 
                     # ── interactive controls below the card ───────────────────
-                    btn_col, rate_col, save_col = st.columns([1.2, 0.8, 0.8])
+                    btn_col, rate_col = st.columns([1.5, 1.5])
                     with btn_col:
                         if st.button('💼 Add to Portfolio', key=f"app_star_{row['id']}", use_container_width=True):
                             data['repos'][row['id']]['app_stars'] = data['repos'][row['id']].get('app_stars', 0) + 1
@@ -618,19 +722,21 @@ def run_app():
                             st.success('Added!')
                             st.rerun()
                     with rate_col:
-                        star_count = st.number_input(
-                            'Rate (0–7)', 0, 7,
-                            int(row.get('user_rating') or 0),
-                            key=f"rate_{row['id']}",
-                            label_visibility='visible',
-                        )
-                    with save_col:
-                        st.markdown('<div style="margin-top:26px"></div>', unsafe_allow_html=True)
-                        if st.button('💾 Save', key=f"rate_btn_{row['id']}", use_container_width=True):
-                            data['repos'][row['id']]['user_rating'] = star_count
-                            save_db(data)
-                            st.success('Saved!')
-                            st.rerun()
+                        current_rating = int(row.get('user_rating') or 0)
+                        st.markdown('**Rate (1-7):**')
+                        star_cols = st.columns(7, gap='small')
+                        for i in range(1, 8):
+                            with star_cols[i - 1]:
+                                star_button = st.button(
+                                    '⭐' if i <= current_rating else '☆',
+                                    key=f"rate_{row['id']}_{i}",
+                                    use_container_width=True
+                                )
+                                if star_button:
+                                    data['repos'][row['id']]['user_rating'] = i
+                                    save_db(data)
+                                    st.success(f'Rated {i} stars!')
+                                    st.rerun()
 
                     with st.expander('📚 Study Path'):
                         for item in recommend_study_material(row):
