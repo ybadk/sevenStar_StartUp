@@ -228,6 +228,22 @@ def save_db(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _safe_int(val, default=0):
+    """Convert *val* to int safely.
+
+    Handles all the cases that bare ``int()`` cannot:
+    - ``None``           → *default*
+    - ``float('nan')``   → *default*  (pandas uses NaN for missing numeric data;
+                                        NaN is *truthy* so ``nan or 0`` still = nan)
+    - numpy / pandas NA  → *default*
+    - anything else that raises → *default*
+    """
+    try:
+        return default if pd.isna(val) else int(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def enrich_repos(external_repos, persisted):
     for rid, repo in external_repos.items():
         if rid in persisted:
@@ -560,10 +576,11 @@ def run_app():
 
     global_repos = list(all_repos.values())
 
-    # small safe-cast to numeric
+    # safe-cast to numeric — _safe_int handles None, NaN, and invalid values
     for item in global_repos:
-        item['stars'] = int(item.get('stars', 0) or 0)
-        item['app_stars'] = int(item.get('app_stars', 0) or 0)
+        item['stars'] = _safe_int(item.get('stars', 0))
+        item['app_stars'] = _safe_int(item.get('app_stars', 0))
+        item['user_rating'] = _safe_int(item.get('user_rating'), default=None)
 
     df = pd.DataFrame(global_repos)
     if df.empty:
@@ -585,13 +602,26 @@ def run_app():
         search_text = st.text_input('🔎 Search projects', placeholder='Search by name or description', help='Full-text search')
         
         st.markdown('---')
-        st.markdown('### � Top Starred Repos')
+        st.markdown('### 🏆 Top Starred Repos')
         
         # Load and display starred_repos_2.txt data
         starred_df = parse_starred_repos_2()
         if not starred_df.empty:
-            # Display top 10 ranked repos
-            display_df = starred_df.head(10)[['rank', 'name', 'stars', 'description']]
+
+            # Add user ratings from database
+            def get_user_rating(repo_name):
+                repo_key = repo_name.lower()
+                if repo_key in data['repos']:
+                    rating = data['repos'][repo_key].get('user_rating')
+                    if rating and rating > 0:
+                        return '⭐' * int(rating)
+                return '—'
+            
+            # Display top 10 ranked repos with ratings
+            display_df = starred_df.head(10)[['rank', 'name', 'stars', 'description']].copy()
+            display_df['rating'] = display_df['name'].apply(get_user_rating)
+            display_df = display_df[['rank', 'name', 'stars', 'rating', 'description']]
+            
             st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -600,6 +630,7 @@ def run_app():
                     'rank': st.column_config.NumberColumn('Rank', width='small'),
                     'name': st.column_config.TextColumn('Repository', width='medium'),
                     'stars': st.column_config.NumberColumn('Stars', width='small', format='%d'),
+                    'rating': st.column_config.TextColumn('Rating', width='small'),
                     'description': st.column_config.TextColumn('Description', width='large')
                 }
             )
@@ -607,7 +638,7 @@ def run_app():
             st.info('No starred repos data found.')
         
         st.markdown('---')
-        st.markdown('### �📚 Data Sources')
+        st.markdown('### 📚 Data Sources')
         st.markdown('**Indexed from:**')
         for f in STARRED_FILES:
             st.caption(f'▸ {f.name}')
@@ -666,8 +697,10 @@ def run_app():
                 col = cols[i % 2]
                 with col:
                     # ── single HTML block: all display-only info ──────────────
-                    rating = row.get('user_rating')
-                    rating_display = f"{'⭐' * int(rating)} ({rating}/7)" if rating and rating > 0 else "Not rated"
+                    _raw_rating = row.get('user_rating')
+                    # Explicit NaN/None guard — don't rely on nan > 0 being False
+                    _r = _safe_int(_raw_rating) if not pd.isna(_raw_rating) else 0
+                    rating_display = f"{'⭐' * _r} ({_r}/7)" if _r > 0 else "Not rated"
                     desc = (row.get('description') or 'No description provided')[:200]
                     gh_url = row.get('github_url', '#')
                     industry = row.get('industry', 'General Tech')
@@ -685,8 +718,8 @@ def run_app():
   </div>
   <div class="repo-description">{desc}</div>
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px">
-    <span class="metric-badge">⭐ {int(row.get('stars', 0)):,} GitHub stars</span>
-    <span class="metric-badge">💼 {int(row.get('app_stars', 0))} portfolio adds</span>
+    <span class="metric-badge">⭐ {_safe_int(row.get('stars', 0)):,} GitHub stars</span>
+    <span class="metric-badge">💼 {_safe_int(row.get('app_stars', 0))} portfolio adds</span>
     <span class="metric-badge">🌟 {rating_display}</span>
   </div>
   <hr style="border-color:#2a2b2e;margin:8px 0">
@@ -714,29 +747,30 @@ def run_app():
 """, unsafe_allow_html=True)
 
                     # ── interactive controls below the card ───────────────────
-                    btn_col, rate_col = st.columns([1.5, 1.5])
+                    btn_col, rate_col = st.columns([1.2, 1.8])
                     with btn_col:
+                        st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
                         if st.button('💼 Add to Portfolio', key=f"app_star_{row['id']}", use_container_width=True):
                             data['repos'][row['id']]['app_stars'] = data['repos'][row['id']].get('app_stars', 0) + 1
                             save_db(data)
-                            st.success('Added!')
+                            st.toast('Added to portfolio! 💼')
                             st.rerun()
                     with rate_col:
-                        current_rating = int(row.get('user_rating') or 0)
-                        st.markdown('**Rate (1-7):**')
-                        star_cols = st.columns(7, gap='small')
-                        for i in range(1, 8):
-                            with star_cols[i - 1]:
-                                star_button = st.button(
-                                    '⭐' if i <= current_rating else '☆',
-                                    key=f"rate_{row['id']}_{i}",
-                                    use_container_width=True
-                                )
-                                if star_button:
-                                    data['repos'][row['id']]['user_rating'] = i
-                                    save_db(data)
-                                    st.success(f'Rated {i} stars!')
-                                    st.rerun()
+                        # _safe_int guards against NaN (pandas stores missing floats
+                        # as float('nan'), which is truthy — so `nan or 0` == nan,
+                        # and int(nan) raises ValueError on Python 3.12)
+                        current_rating = _safe_int(row.get('user_rating'))
+                        new_rating = st.select_slider(
+                            'Your rating',
+                            options=list(range(8)),
+                            value=current_rating,
+                            format_func=lambda v: '☆ None' if v == 0 else f"{'⭐' * v} ({v}/7)",
+                            key=f"rate_slider_{row['id']}",
+                        )
+                        if new_rating != current_rating:
+                            data['repos'][row['id']]['user_rating'] = new_rating
+                            save_db(data)
+                            st.toast(f'Rated {new_rating}/7 ⭐')
 
                     with st.expander('📚 Study Path'):
                         for item in recommend_study_material(row):
