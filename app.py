@@ -658,8 +658,59 @@ def run_app():
         filter_industries = st.multiselect('Select Industries', industries, default=industries, key='industry_filter')
         
         st.markdown('**Minimum Metrics**')
-        min_stars = st.slider('GitHub stars (estimated)', 0, 100000, 500, help='Filter by GitHub popularity')
-        min_rating = st.slider('Community rating (0-7)', 0, 7, 0, help='Filter by user ratings')
+
+        # ── GitHub Stars — data-driven button filter ───────────────────────
+        # Compute thresholds from the actual star values in the loaded dataset
+        _stars_series = df['stars'].dropna().astype(int) if not df.empty else pd.Series([], dtype=int)
+        if len(_stars_series) > 0:
+            def _fmt_stars(n):
+                return f"{round(n, -3) // 1000}K+" if n >= 1000 else f"{n}+"
+            _thresholds = sorted({
+                int(round(_stars_series.quantile(0.25) / 500) * 500),
+                int(round(_stars_series.quantile(0.50) / 1000) * 1000),
+                int(round(_stars_series.quantile(0.75) / 2000) * 2000),
+                int(round(_stars_series.quantile(0.90) / 5000) * 5000),
+                int(_stars_series.max()),
+            })
+            _STAR_OPTIONS = {"Any": 0}
+            for _t in _thresholds:
+                if _t > 0:
+                    _lbl = _fmt_stars(_t)
+                    if _lbl not in _STAR_OPTIONS:
+                        _STAR_OPTIONS[_lbl] = _t
+        else:
+            _STAR_OPTIONS = {"Any": 0, "1K+": 1000, "5K+": 5000, "10K+": 10000, "20K+": 20000, "40K+": 40000}
+
+        _star_choice = st.radio(
+            "⭐ GitHub Stars",
+            options=list(_STAR_OPTIONS.keys()),
+            horizontal=True,
+            index=0,
+            key="star_filter",
+            help=f"Filter by minimum GitHub stars — dataset range: {_stars_series.min():,}–{_stars_series.max():,}" if len(_stars_series) > 0 else "Filter by minimum GitHub stars",
+        )
+        min_stars = _STAR_OPTIONS[_star_choice]
+
+        # ── Community Rating — data-driven button filter ───────────────────
+        # Show only rating levels that actually have repos rated at or above them
+        _rated_series = df['user_rating'].dropna().astype(int) if not df.empty else pd.Series([], dtype=int)
+        _rated_counts = {r: int((_rated_series >= r).sum()) for r in range(1, 8)} if len(_rated_series) > 0 else {}
+        _RATING_OPTIONS = {"Any": 0}
+        for _r in range(1, 8):
+            if _rated_counts.get(_r, 0) > 0:
+                _RATING_OPTIONS[f"{_r}" if _r == 7 else f"{_r}+"] = _r
+        if len(_RATING_OPTIONS) == 1:                       # no rated repos yet — show full scale
+            _RATING_OPTIONS = {"Any": 0, "1+": 1, "2+": 2, "3+": 3, "4+": 4, "5+": 5, "6+": 6, "7": 7}
+
+        _rating_choice = st.radio(
+            "🌟 Community Rating",
+            options=list(_RATING_OPTIONS.keys()),
+            horizontal=True,
+            index=0,
+            key="rating_filter",
+            help=f"Filter by minimum community rating — {len(_rated_series):,} rated repos in dataset",
+        )
+        min_rating = _RATING_OPTIONS[_rating_choice]
         
         st.markdown('---')
         search_text = st.text_input('🔎 Search projects', placeholder='Search by name or description', help='Full-text search')
