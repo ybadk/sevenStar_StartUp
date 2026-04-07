@@ -762,7 +762,11 @@ def run_app():
         st.caption('Open Source Investment Platform')
 
     # Tab view
-    tabs = st.tabs(['Marketplace', 'Metrics Dashboard', 'Submit Repo', 'Video Upload', 'Video Request', 'Settings', 'Tutorial'])
+    tabs = st.tabs([
+        'Marketplace', 'Metrics Dashboard', 'Submit Repo',
+        'Video Upload', 'Video Request', 'Settings',
+        'Tutorial', '📚 Repo Library',
+    ])
 
     with tabs[0]:
         if HAS_EXTRAS:
@@ -1468,6 +1472,112 @@ Total storage: {sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file()
 
         st.markdown('---')
         st.markdown('**👨‍💻 Created by Kgthatso Thooe** | Seven Star Startup - Open Source Investment Platform')
+
+    # ── Tab 7 : Repo Library ─────────────────────────────────────────────────
+    with tabs[7]:
+        if HAS_EXTRAS:
+            colored_header(
+                label='Repo Library · starred_repos_3.txt',
+                description='Browse every repo from the extended library, grouped by industry',
+                color_name='green-70',
+            )
+        else:
+            st.markdown('### 📚 Repo Library · starred_repos_3.txt')
+
+        _lib_df = parse_starred_repos_3()
+
+        if _lib_df.empty:
+            st.warning(
+                'starred_repos_3.txt was not found or contains no valid repos. '
+                'Make sure the file is in the sevenStar_StartUp folder.'
+            )
+        else:
+            # ── industry colour palette ───────────────────────────────────
+            _IND_COLOR = {
+                'AI/ML': '#5e6ad2',
+                'Cybersecurity': '#ef4444',
+                'Cloud/DevOps': '#3b9eff',
+                'Education': '#f59e0b',
+                'Data Tools': '#8b5cf6',
+                'Web/UI': '#06b6d4',
+                'Media/Gaming': '#ec4899',
+                'General Tech': '#6b7280',
+            }
+
+            _industries = sorted(_lib_df['Industry'].unique().tolist())
+
+            # Build sub-tab labels: "All (N)" + one per industry with count
+            _sub_labels = [f'🗂️ All  ({len(_lib_df):,})'] + [
+                f'{_lib_df[_lib_df["Industry"] == ind].shape[0]}  {ind}'
+                for ind in _industries
+            ]
+            _sub_tabs = st.tabs(_sub_labels)
+
+            # ── card renderer ─────────────────────────────────────────────
+            def _card(r):
+                color = _IND_COLOR.get(r['Industry'], '#6b7280')
+                desc = r['Description'] or ''
+                return (
+                    f'<div style="background:#16171a;border-radius:12px;'
+                    f'padding:14px 16px;border:1px solid #2a2b2e;'
+                    f'border-top:3px solid {color};display:flex;'
+                    f'flex-direction:column;gap:5px;min-height:160px">'
+
+                    f'<div style="font-size:0.87rem;font-weight:700;'
+                    f'color:#e8e8ef;line-height:1.3;word-break:break-word">'
+                    f'{r["Repository"]}</div>'
+
+                    f'<div style="font-size:0.71rem;color:#6e7681">'
+                    f'👤 {r["Owner"]}</div>'
+
+                    f'<div style="font-size:0.75rem;color:#9ba3af;'
+                    f'line-height:1.5;flex:1">{desc}</div>'
+
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:center;margin-top:auto;padding-top:6px">'
+                    f'<span style="font-size:0.68rem;background:{color}22;'
+                    f'color:{color};border-radius:20px;padding:2px 8px;'
+                    f'font-weight:600">{r["Industry"]}</span>'
+                    f'<a href="{r["GitHub"]}" target="_blank" '
+                    f'style="font-size:0.75rem;color:#5e6ad2;'
+                    f'text-decoration:none">🔗 GitHub →</a>'
+                    f'</div></div>'
+                )
+
+            def _grid(subset):
+                cards_html = ''.join(_card(r) for _, r in subset.iterrows())
+                st.markdown(
+                    '<div style="display:grid;'
+                    'grid-template-columns:repeat(3,1fr);'
+                    f'gap:14px;padding:6px 0">{cards_html}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── All tab ───────────────────────────────────────────────────
+            with _sub_tabs[0]:
+                st.caption(
+                    f'**{len(_lib_df):,} repos** across '
+                    f'**{len(_industries)}** industries'
+                )
+                _grid(_lib_df)
+
+            # ── Per-industry tabs ─────────────────────────────────────────
+            for _ti, _ind in enumerate(_industries):
+                with _sub_tabs[_ti + 1]:
+                    _ind_df = _lib_df[
+                        _lib_df['Industry'] == _ind
+                    ].reset_index(drop=True)
+                    _col = _IND_COLOR.get(_ind, '#6b7280')
+                    st.markdown(
+                        f'<span style="font-size:0.8rem;'
+                        f'background:{_col}22;color:{_col};'
+                        f'border-radius:20px;padding:3px 12px;'
+                        f'font-weight:600">'
+                        f'{len(_ind_df)} repos in {_ind}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown('')
+                    _grid(_ind_df)
 
     save_db(data)
 
