@@ -283,6 +283,8 @@ def load_db():
         data['video_uploads'] = []
     if 'video_requests' not in data:
         data['video_requests'] = []
+    if 'rating_events' not in data:
+        data['rating_events'] = []
     return data
 
 
@@ -663,8 +665,10 @@ def run_app():
         # Compute thresholds from the actual star values in the loaded dataset
         _stars_series = df['stars'].dropna().astype(int) if not df.empty else pd.Series([], dtype=int)
         if len(_stars_series) > 0:
+
             def _fmt_stars(n):
                 return f"{round(n, -3) // 1000}K+" if n >= 1000 else f"{n}+"
+
             _thresholds = sorted({
                 int(round(_stars_series.quantile(0.25) / 500) * 500),
                 int(round(_stars_series.quantile(0.50) / 1000) * 1000),
@@ -699,7 +703,7 @@ def run_app():
         for _r in range(1, 8):
             if _rated_counts.get(_r, 0) > 0:
                 _RATING_OPTIONS[f"{_r}" if _r == 7 else f"{_r}+"] = _r
-        if len(_RATING_OPTIONS) == 1:                       # no rated repos yet — show full scale
+        if len(_RATING_OPTIONS) == 1:  # no rated repos yet — show full scale
             _RATING_OPTIONS = {"Any": 0, "1+": 1, "2+": 2, "3+": 3, "4+": 4, "5+": 5, "6+": 6, "7": 7}
 
         _rating_choice = st.radio(
@@ -816,7 +820,7 @@ def run_app():
     tabs = st.tabs([
         'Marketplace', 'Metrics Dashboard', 'Submit Repo',
         'Video Upload', 'Video Request', 'Settings',
-        'Tutorial', '📚 Repo Library',
+        'Tutorial', '📚 Repo Library', '🗳️ Voters Gallery',
     ])
 
     with tabs[0]:
@@ -929,8 +933,22 @@ def run_app():
                         )
                         if new_rating != current_rating:
                             data['repos'][row['id']]['user_rating'] = new_rating
+                            # ── Log rating event for Voters Gallery ──────────
+                            data['rating_events'].append({
+                                'repo_id': row['id'],
+                                'repo_name': row['name'],
+                                'industry': row.get('industry', 'General Tech'),
+                                'github_stars': _safe_int(row.get('stars', 0)),
+                                'app_stars': _safe_int(row.get('app_stars', 0)),
+                                'rating': new_rating,
+                                'previous_rating': current_rating,
+                                'github_url': row.get('github_url', '#'),
+                                'description': (row.get('description') or '')[:200],
+                                'rated_at': datetime.utcnow().isoformat(),
+                            })
                             save_db(data)
                             st.toast(f'Rated {new_rating}/7 ⭐')
+                            st.rerun()
 
                     with st.expander('📚 Study Path'):
                         for item in recommend_study_material(row):
@@ -1629,6 +1647,171 @@ Total storage: {sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file()
                     )
                     st.markdown('')
                     _grid(_ind_df)
+
+    # ── Tab 9: Voters Gallery ─────────────────────────────────────────────────
+    with tabs[8]:
+        if HAS_EXTRAS:
+            colored_header(
+                label='🗳️ Voters Gallery',
+                description='Every rated repo — live record of community judgement',
+                color_name='orange-70',
+            )
+        else:
+            st.markdown('### 🗳️ Voters Gallery')
+            st.markdown('Every rated repo — live record of community judgement')
+
+        # ── pull the raw events and the current rated-repo snapshot ──────────
+        _events: list = data.get('rating_events', [])
+        _rated_repos = [
+            r for r in global_repos
+            if r.get('user_rating') not in (None, 0)
+            and not pd.isna(r.get('user_rating') or float('nan'))
+        ]
+        _rated_df = (
+            pd.DataFrame(_rated_repos)
+            .sort_values(['user_rating', 'stars'], ascending=False)
+            .reset_index(drop=True)
+            if _rated_repos else pd.DataFrame()
+        )
+
+        # ── Metrics container ─────────────────────────────────────────────────
+        st.markdown('#### 📊 Voting Metrics')
+        _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+
+        _total_events = len(_events)
+        _unique_rated = len(_rated_repos)
+        _avg_rating = (
+            round(sum(e['rating'] for e in _events) / _total_events, 2)
+            if _total_events > 0 else 0.0
+        )
+        # top industry by number of rating events
+        _ind_counts: dict = {}
+        for _ev in _events:
+            _ind_counts[_ev.get('industry', 'General Tech')] = (
+                _ind_counts.get(_ev.get('industry', 'General Tech'), 0) + 1
+            )
+        _top_industry = max(_ind_counts, key=_ind_counts.get) if _ind_counts else '—'
+        _last_rated = (
+            _events[-1].get('repo_name', '—').split('/')[-1]
+            if _events else '—'
+        )
+
+        with _mc1:
+            st.metric('⚡ Total Votes Cast', _total_events)
+        with _mc2:
+            st.metric('📦 Repos Rated', _unique_rated)
+        with _mc3:
+            st.metric('⭐ Avg Vote Score', f"{_avg_rating}/7")
+        with _mc4:
+            st.metric('🏭 Top Voted Industry', _top_industry)
+        with _mc5:
+            st.metric('🕐 Last Rated', _last_rated)
+
+        st.markdown('---')
+
+        # ── Rated-repo card gallery ───────────────────────────────────────────
+        if _rated_df.empty:
+            st.info(
+                '🗳️ No repos have been rated yet. '
+                'Head to the **Marketplace** tab and rate some repos — '
+                'their cards will appear here automatically.'
+            )
+        else:
+            st.markdown(
+                f'**{len(_rated_df)} rated repo{"s" if len(_rated_df) != 1 else ""}** '
+                f'· sorted by rating then GitHub stars'
+            )
+            _vcols = st.columns(2)
+            for _vi, _vrow in _rated_df.iterrows():
+                _vr = _safe_int(_vrow.get('user_rating'))
+                _vrating_disp = f"{'⭐' * _vr} ({_vr}/7)" if _vr > 0 else 'Not rated'
+                _vdesc = (str(_vrow.get('description') or 'No description provided'))[:200]
+                _vgh = _vrow.get('github_url', '#')
+                _vind = _vrow.get('industry', 'General Tech')
+                _vsrc = _vrow.get('source', '—')
+                _vsub = str(_vrow.get('created_at', ''))[:10] or '—'
+                _vtags = _vrow.get('manual_tags') or _vrow.get('tags') or []
+                _vtags_str = ', '.join(_vtags) if _vtags else '—'
+                _vrank = _vi + 1
+                _vrank_icon = {1: '🥇', 2: '🥈', 3: '🥉'}.get(_vrank, f'#{_vrank}')
+
+                with _vcols[_vi % 2]:
+                    st.markdown(f"""
+<div class="repo-card" style="border-left:3px solid #f59e0b">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+    <span style="font-size:1.5rem">{_vrank_icon}</span>
+    <span class="repo-header" style="flex:1">{_vrow['name']}</span>
+    <span class="chip">{_vind}</span>
+  </div>
+  <div class="repo-description">{_vdesc}</div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px">
+    <span class="metric-badge">⭐ {_safe_int(_vrow.get('stars',0)):,} GitHub stars</span>
+    <span class="metric-badge">💼 {_safe_int(_vrow.get('app_stars',0))} portfolio adds</span>
+    <span class="metric-badge" style="color:#f59e0b;font-weight:700">🌟 {_vrating_disp}</span>
+  </div>
+  <hr style="border-color:#2a2b2e;margin:8px 0">
+  <table style="width:100%;font-size:0.78rem;color:#9ba3af;border-collapse:collapse">
+    <tr>
+      <td style="padding:2px 8px 2px 0"><b>Owner</b></td>
+      <td>{_vrow.get('owner','—')}</td>
+      <td style="padding:2px 8px"><b>Source</b></td>
+      <td>{_vsrc}</td>
+    </tr>
+    <tr>
+      <td style="padding:2px 8px 2px 0"><b>Added</b></td>
+      <td>{_vsub}</td>
+      <td style="padding:2px 8px"><b>Tags</b></td>
+      <td>{_vtags_str}</td>
+    </tr>
+  </table>
+  <div style="margin-top:10px">
+    <a href="{_vgh}" target="_blank"
+       style="color:#5e6ad2;font-size:0.85rem;text-decoration:none">
+      🔗 View on GitHub →
+    </a>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+                    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+
+        st.markdown('---')
+
+        # ── Rating event timeline ─────────────────────────────────────────────
+        st.markdown('#### 🕐 Rating Event Log')
+        if not _events:
+            st.caption('No rating events recorded yet.')
+        else:
+            _recent = list(reversed(_events))  # newest first
+            _page_size = 20
+            _show_n = st.slider(
+                'Events to show', min_value=5,
+                max_value=max(5, len(_recent)),
+                value=min(_page_size, len(_recent)),
+                step=5, key='voter_log_slider',
+            )
+            for _ev in _recent[:_show_n]:
+                _ev_r = _ev.get('rating', 0)
+                _ev_prev = _ev.get('previous_rating', 0)
+                _ev_stars = '⭐' * _ev_r if _ev_r else '☆ None'
+                _ev_delta = (
+                    f"↑ from {_ev_prev}" if _ev_r > _ev_prev
+                    else (f"↓ from {_ev_prev}" if _ev_r < _ev_prev else '—')
+                )
+                _ev_ts = str(_ev.get('rated_at', ''))[:16].replace('T', ' ')
+                _ev_name = _ev.get('repo_name', '—')
+                _ev_ind = _ev.get('industry', '—')
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:12px;'
+                    f'padding:7px 12px;margin-bottom:4px;border-radius:8px;'
+                    f'background:#13141600;border:1px solid rgba(255,255,255,0.06)">'
+                    f'<span style="font-size:0.78rem;color:#6b7280;min-width:130px">{_ev_ts}</span>'
+                    f'<span style="font-size:0.82rem;color:#d0d6e0;flex:1">'
+                    f'<b>{_ev_name}</b> &nbsp;<span style="color:#6b7280">({_ev_ind})</span></span>'
+                    f'<span style="font-size:0.82rem;color:#f59e0b">{_ev_stars} ({_ev_r}/7)</span>'
+                    f'<span style="font-size:0.75rem;color:#6b7280;min-width:70px;text-align:right">{_ev_delta}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
     save_db(data)
 
