@@ -177,6 +177,69 @@ def parse_starred_repos_2():
     return df
 
 
+def _count_file_repos(path):
+    """Count valid owner/repo lines in a starred-repos text file."""
+    if not path.exists():
+        return 0
+    count = 0
+    try:
+        for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if 'https://' in line:
+                break
+            if '/' in line.split(':', 1)[0]:
+                count += 1
+    except Exception:
+        pass
+    return count
+
+
+def parse_starred_repos_3():
+    """Parse starred_repos_3.txt and return a clean DataFrame for display."""
+    # The file lives next to app.py in sevenStar_StartUp/
+    src = APP_DIR / 'starred_repos_3.txt'
+    if not src.exists():
+        src = STARRED_FILES[2]  # fallback: top7_project_files location
+    if not src.exists():
+        return pd.DataFrame()
+    repos_data = []
+    try:
+        raw = src.read_text(encoding='utf-8', errors='ignore').splitlines()
+    except Exception:
+        return pd.DataFrame()
+    for li in raw:
+        line = li.strip()
+        if not line or line.startswith('#'):
+            continue
+        if 'https://' in line:
+            break
+        parts = line.split(':', 1)
+        fullname = parts[0].strip()
+        description = parts[1].strip() if len(parts) > 1 and parts[1].strip() not in ('null', '') else ''
+        if '/' not in fullname:
+            continue
+        try:
+            owner, repo_name = fullname.split('/', 1)
+            industry = (
+                classify_industry(fullname, description)
+                if HAS_MODULES
+                else classify_industry_fallback(fullname, description)
+            )
+            repos_data.append({
+                '#': len(repos_data) + 1,
+                'Repository': fullname,
+                'Owner': owner,
+                'Description': description[:120] + ('…' if len(description) > 120 else ''),
+                'Industry': industry,
+                'GitHub': f'https://github.com/{fullname}',
+            })
+        except Exception:
+            continue
+    return pd.DataFrame(repos_data)
+
+
 def classify_industry_fallback(name, description):
     low = f"{name} {description}".lower()
     if any(k in low for k in ['ai', 'ml', 'deep', 'neural', 'agent', 'llm']):
@@ -639,9 +702,51 @@ def run_app():
         
         st.markdown('---')
         st.markdown('### 📚 Data Sources')
-        st.markdown('**Indexed from:**')
-        for f in STARRED_FILES:
-            st.caption(f'▸ {f.name}')
+
+        _source_meta = [
+            (
+                'starred_repos.txt',
+                STARRED_FILES[0],
+                '#5e6ad2',
+                'Primary seeded collection',
+            ),
+            (
+                'starred_repos_2.txt',
+                STARRED_FILES[1],
+                '#3b9eff',
+                'Community additions',
+            ),
+            (
+                'starred_repos_3.txt',
+                APP_DIR / 'starred_repos_3.txt',
+                '#22c55e',
+                'Extended AI/OSS library',
+            ),
+        ]
+
+        for _fname, _fpath, _color, _label in _source_meta:
+            _n = _count_file_repos(_fpath)
+            _exists = '✅' if _fpath.exists() else '❌'
+            st.markdown(
+                f"""
+<div style="background:#16171a;border-radius:10px;
+            padding:10px 14px;margin:5px 0;
+            border-left:4px solid {_color}">
+  <div style="display:flex;justify-content:space-between;
+              align-items:center">
+    <span style="font-size:0.78rem;font-weight:600;
+                 color:#c9d1d9">📄 {_fname}</span>
+    <span style="font-size:0.72rem;color:#6e7681">{_exists}</span>
+  </div>
+  <div style="font-size:1.8rem;font-weight:700;
+              color:{_color};line-height:1.15;margin:3px 0">
+    {_n:,}
+  </div>
+  <div style="font-size:0.72rem;color:#6e7681">{_label}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
         
         st.markdown('---')
         col1, col2 = st.sidebar.columns(2)
@@ -777,6 +882,44 @@ def run_app():
                             st.markdown(f'▸ {item}')
 
                     st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+
+        # ── Scrollable starred_repos_3 browser ───────────────────────────────
+        st.markdown('---')
+        with st.expander('📂 Browse Starred Repos · File 3  (extended library)', expanded=False):
+            _df3 = parse_starred_repos_3()
+            if _df3.empty:
+                st.info('starred_repos_3.txt not found or contains no valid repos.')
+            else:
+                st.markdown(
+                    f'**{len(_df3):,} repositories** indexed from `starred_repos_3.txt`'
+                )
+                _scroll = st.container(height=450)
+                with _scroll:
+                    st.dataframe(
+                        _df3,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            '#': st.column_config.NumberColumn(
+                                '#', width='small'
+                            ),
+                            'Repository': st.column_config.TextColumn(
+                                'Repository', width='medium'
+                            ),
+                            'Owner': st.column_config.TextColumn(
+                                'Owner', width='small'
+                            ),
+                            'Description': st.column_config.TextColumn(
+                                'Description', width='large'
+                            ),
+                            'Industry': st.column_config.TextColumn(
+                                'Industry', width='small'
+                            ),
+                            'GitHub': st.column_config.LinkColumn(
+                                'GitHub', width='small', display_text='🔗 Open'
+                            ),
+                        },
+                    )
 
     with tabs[1]:
         if HAS_EXTRAS:
